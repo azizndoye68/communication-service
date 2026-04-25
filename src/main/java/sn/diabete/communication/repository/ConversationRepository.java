@@ -14,20 +14,17 @@ import java.util.Optional;
 @Repository
 public interface ConversationRepository extends JpaRepository<Conversation, Long> {
 
-    // Trouver conversation PATIENT_EQUIPE pour un patient
-    Optional<Conversation> findByPatientIdAndType(Long patientId, ConversationType type);
+    // ✅ List au lieu de Optional pour gérer les doublons existants
+    List<Conversation> findByPatientIdAndType(Long patientId, ConversationType type);
 
-    // Trouver toutes les conversations d'un patient
     List<Conversation> findByPatientIdAndStatus(Long patientId, ConversationStatus status);
 
-    // Trouver conversations où un médecin est référent
     List<Conversation> findByMedecinReferentIdAndTypeAndStatus(
             Long medecinReferentId,
             ConversationType type,
             ConversationStatus status
     );
 
-    // Trouver conversation entre 2 médecins
     @Query("SELECT c FROM Conversation c WHERE c.type = :type " +
             "AND ((c.medecinId1 = :medecinId1 AND c.medecinId2 = :medecinId2) " +
             "OR (c.medecinId1 = :medecinId2 AND c.medecinId2 = :medecinId1))")
@@ -37,7 +34,6 @@ public interface ConversationRepository extends JpaRepository<Conversation, Long
             @Param("type") ConversationType type
     );
 
-    // Trouver toutes les conversations d'un médecin (MEDECIN_MEDECIN)
     @Query("SELECT c FROM Conversation c WHERE c.type = :type " +
             "AND c.status = :status " +
             "AND (c.medecinId1 = :medecinId OR c.medecinId2 = :medecinId) " +

@@ -12,6 +12,7 @@ import sn.diabete.communication.repository.ConversationRepository;
 import sn.diabete.communication.repository.MessageRepository;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -25,38 +26,41 @@ public class ConversationService {
     private final PatientServiceClient patientServiceClient;
     private final MedecinServiceClient medecinServiceClient;
 
-    /**
-     * Récupérer ou créer conversation PATIENT_EQUIPE
-     */
     @Transactional
     public Conversation getOrCreatePatientConversation(Long patientId) {
         log.info("Récupération/création conversation pour patient {}", patientId);
 
-        return conversationRepository
-                .findByPatientIdAndType(patientId, ConversationType.PATIENT_EQUIPE)
-                .orElseGet(() -> {
-                    // Récupérer infos patient
-                    PatientInfoDTO patient = patientServiceClient.getPatientById(patientId);
+        List<Conversation> existing = conversationRepository
+                .findByPatientIdAndType(patientId, ConversationType.PATIENT_EQUIPE);
 
-                    if (patient.getMedecinId() == null) {
-                        throw new RuntimeException("Patient sans médecin référent");
-                    }
+        if (!existing.isEmpty()) {
+            if (existing.size() > 1) {
+                log.warn("⚠️ {} doublons détectés pour patient {}, nettoyage...",
+                        existing.size(), patientId);
+                existing.sort(Comparator.comparing(Conversation::getId));
+                List<Conversation> toDelete = existing.subList(1, existing.size());
+                conversationRepository.deleteAll(toDelete);
+                conversationRepository.flush();
+            }
+            return existing.get(0);
+        }
 
-                    // Créer nouvelle conversation
-                    Conversation conversation = Conversation.builder()
-                            .type(ConversationType.PATIENT_EQUIPE)
-                            .patientId(patientId)
-                            .medecinReferentId(patient.getMedecinId())
-                            .status(ConversationStatus.ACTIVE)
-                            .build();
+        PatientInfoDTO patient = patientServiceClient.getPatientById(patientId);
 
-                    return conversationRepository.save(conversation);
-                });
+        if (patient.getMedecinId() == null) {
+            throw new RuntimeException("Patient sans médecin référent");
+        }
+
+        Conversation conversation = Conversation.builder()
+                .type(ConversationType.PATIENT_EQUIPE)
+                .patientId(patientId)
+                .medecinReferentId(patient.getMedecinId())
+                .status(ConversationStatus.ACTIVE)
+                .build();
+
+        return conversationRepository.save(conversation);
     }
 
-    /**
-     * Créer ou récupérer conversation entre 2 médecins
-     */
     @Transactional
     public Conversation getOrCreateMedecinConversation(Long medecinId1, Long medecinId2) {
         log.info("Récupération/création conversation entre médecins {} et {}", medecinId1, medecinId2);
@@ -70,14 +74,10 @@ public class ConversationService {
                             .medecinId2(medecinId2)
                             .status(ConversationStatus.ACTIVE)
                             .build();
-
                     return conversationRepository.save(conversation);
                 });
     }
 
-    /**
-     * Récupérer toutes les conversations d'un patient
-     */
     public List<ConversationDTO> getPatientConversations(Long patientId) {
         log.info("Récupération conversations patient {}", patientId);
 
@@ -89,15 +89,11 @@ public class ConversationService {
                 .collect(Collectors.toList());
     }
 
-    /**
-     * Récupérer toutes les conversations d'un médecin
-     */
     public List<ConversationDTO> getMedecinConversations(Long medecinId) {
         log.info("Récupération conversations médecin {}", medecinId);
 
         List<ConversationDTO> allConversations = new ArrayList<>();
 
-        // 1. Conversations PATIENT_EQUIPE (patients suivis)
         List<Conversation> patientConversations = conversationRepository
                 .findByMedecinReferentIdAndTypeAndStatus(
                         medecinId,
@@ -111,7 +107,6 @@ public class ConversationService {
                         .collect(Collectors.toList())
         );
 
-        // 2. Conversations MEDECIN_MEDECIN
         List<Conversation> medecinConversations = conversationRepository
                 .findMedecinConversations(medecinId, ConversationType.MEDECIN_MEDECIN, ConversationStatus.ACTIVE);
 
@@ -124,29 +119,19 @@ public class ConversationService {
         return allConversations;
     }
 
-    /**
-     * Récupérer une conversation par ID
-     */
     public ConversationDTO getConversationById(Long conversationId) {
         Conversation conversation = conversationRepository.findById(conversationId)
                 .orElseThrow(() -> new RuntimeException("Conversation non trouvée"));
-
         return mapToDTO(conversation);
     }
 
-    /**
-     * Vérifier accès d'un médecin à une conversation patient
-     */
     public boolean canMedecinAccessConversation(Long medecinId, Long conversationId) {
         Conversation conversation = conversationRepository.findById(conversationId)
                 .orElse(null);
 
-        if (conversation == null) {
-            return false;
-        }
+        if (conversation == null) return false;
 
         if (conversation.getType() == ConversationType.PATIENT_EQUIPE) {
-            // Vérifier si médecin fait partie de l'équipe
             try {
                 return medecinServiceClient.canAccessPatient(medecinId, conversation.getPatientId());
             } catch (Exception e) {
@@ -161,9 +146,6 @@ public class ConversationService {
         return false;
     }
 
-    /**
-     * Mapper Conversation vers DTO
-     */
     private ConversationDTO mapToDTO(Conversation conversation) {
         ConversationDTO dto = ConversationDTO.builder()
                 .id(conversation.getId())
@@ -174,7 +156,6 @@ public class ConversationService {
                 .updatedAt(conversation.getUpdatedAt())
                 .build();
 
-        // Récupérer dernier message
         messageRepository.findFirstByConversationIdOrderByCreatedAtDesc(conversation.getId())
                 .ifPresent(message -> {
                     MessageDTO messageDTO = MessageDTO.builder()
@@ -186,7 +167,6 @@ public class ConversationService {
                     dto.setLastMessage(messageDTO);
                 });
 
-        // Enrichir selon le type
         if (conversation.getType() == ConversationType.PATIENT_EQUIPE) {
             enrichPatientConversation(dto, conversation);
         }
@@ -197,7 +177,6 @@ public class ConversationService {
     private ConversationDTO mapMedecinConversationToDTO(Conversation conversation, Long currentMedecinId) {
         ConversationDTO dto = mapToDTO(conversation);
 
-        // Déterminer l'autre médecin
         Long otherMedecinId = conversation.getMedecinId1().equals(currentMedecinId)
                 ? conversation.getMedecinId2()
                 : conversation.getMedecinId1();
@@ -216,12 +195,10 @@ public class ConversationService {
 
     private void enrichPatientConversation(ConversationDTO dto, Conversation conversation) {
         try {
-            // Infos patient
             PatientInfoDTO patient = patientServiceClient.getPatientById(conversation.getPatientId());
             dto.setPatientId(patient.getId());
             dto.setPatientName(patient.getPrenom() + " " + patient.getNom());
 
-            // Infos équipe médicale
             EquipeMedicaleDTO equipe = medecinServiceClient.getEquipeMedicale(conversation.getMedecinReferentId());
             dto.setMedecinReferentId(equipe.getProprietaireId());
 

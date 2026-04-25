@@ -7,7 +7,15 @@ import org.hibernate.annotations.UpdateTimestamp;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "conversations")
+@Table(
+        name = "conversations",
+        uniqueConstraints = {
+                @UniqueConstraint(
+                        name = "uk_conversation_patient_type",
+                        columnNames = {"patient_id", "type"}
+                )
+        }
+)
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -22,14 +30,12 @@ public class Conversation {
     @Column(nullable = false)
     private ConversationType type;
 
-    // Pour PATIENT_EQUIPE
     @Column(name = "patient_id")
     private Long patientId;
 
     @Column(name = "medecin_referent_id")
     private Long medecinReferentId;
 
-    // Pour MEDECIN_MEDECIN
     @Column(name = "medecin_id_1")
     private Long medecinId1;
 
